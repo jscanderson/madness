@@ -17,6 +17,99 @@
 
 using namespace madness;
 
+static const int ZZZ=1;
+static double cumulativenorm = 1.0;
+
+static double nonrelguess(const coord_3d& r){
+     return std::exp(-ZZZ*std::sqrt(r[0]*r[0]+r[1]*r[1]+r[2]*r[2]));
+}
+
+//Functor for spiky gaussian function
+class SpikyGaussianFunctor : public FunctionFunctorInterface<double,3> {
+     private:
+          double m_T;
+          std::vector<coord_3d> m_R;
+     public:
+          // Constructor 
+          SpikyGaussianFunctor(double T){
+               m_T = T;
+               m_R.push_back(coord_3d({0.0,0.0,0.0}));
+          }
+          
+          //overload () operator 
+          double operator() (const coord_3d&r) const {
+               double x = r[0];
+               double y = r[1];
+               double z = r[2];
+               double rr = x*x+y*y+z*z;
+               double result = std::exp(-m_T*rr);
+               return result;
+          }
+
+          //Because the distribution is only nonzero in a small window around the center, need to create a special point
+          std::vector<coord_3d> special_points() const {
+               return m_R;
+          }
+
+          madness::Level special_level() {
+               return 18;
+          }
+};
+
+//Masking function to switch from 0 to 1 smoothly at boundary
+//Pulled from SCF.h
+inline double mask1(double x) {
+     x = (x*x*(3.-2.*x));
+     return x;
+}
+static double mask3(const coord_3d& ruser) {
+coord_3d rsim;
+user_to_sim(ruser, rsim);
+double x= rsim[0], y=rsim[1], z=rsim[2];
+double lo = 0.0625, hi = 1.0-lo, result = 1.0;
+double rlo = 1.0/lo;
+if (x<lo)
+result *= mask1(x*rlo);
+else if (x>hi)
+result *= mask1((1.0-x)*rlo);
+if (y<lo)
+result *= mask1(y*rlo);
+else if (y>hi)
+result *= mask1((1.0-y)*rlo);
+if (z<lo)
+result *= mask1(z*rlo);
+else if (z>hi)
+result *= mask1((1.0-z)*rlo);
+return result;
+}
+
+//Adds in random noise to a vector of vector of functions
+complex_function_3d random_function(World & world){
+int level = FunctionDefaults<3>::get_initial_level();
+FunctionDefaults<3>::set_initial_level(3);
+complex_function_3d result = complex_factory_3d(world);
+FunctionDefaults<3>::set_initial_level(level);
+
+//Lambda function to add in noise
+auto noise = [](const Key<3> & key, Tensor<std::complex<double>> & x) mutable
+{
+Tensor<std::complex<double>> y(x.size());
+y.fillrandom();
+//y.scale(magnitude);
+y.scale(10.0);
+x = x + y;
+//x(0,0,0) += y(0,0,0)-0.5;
+};
+
+real_function_3d mask = real_factory_3d(world).f(mask3);
+
+result.unaryop(noise);
+result = mask * result;
+
+// Done
+return result;
+}
+
 // Needed for rebalancing
 template <typename T, int NDIM>
 struct lbcost {
@@ -192,6 +285,50 @@ Tensor<std::complex<double>> Q2(const Tensor<std::complex<double>>& s) {
 }
 
 
+//Functor to make the (Coulomb) nuclear potential
+class CoulombNucleusFunctor : public FunctionFunctorInterface<double,3> {
+     private:
+          std::vector<int> m_Zlist;
+          std::vector<coord_3d> m_Rlist;
+     public:
+          // Constructor 
+          CoulombNucleusFunctor(Molecule& molecule){
+
+               //get atom coordinates
+               m_Rlist = molecule.get_all_coords_vec();
+               
+               //get atomic numbers
+               for(unsigned int i = 0; i < m_Rlist.size(); i++){
+                    m_Zlist.push_back(molecule.get_atom_number(i));
+               }
+               
+          }
+          
+          //overload () operator 
+          double operator() (const coord_3d&r) const {
+               double result = 0.0;
+               int n = m_Zlist.size();
+               for(int i = 0; i < n; i++){
+                    double x = r[0] - m_Rlist[i][0];
+                    double y = r[1] - m_Rlist[i][1];
+                    double z = r[2] - m_Rlist[i][2];
+                    double r = sqrt(x*x+y*y+z*z+1e-8);
+                    result += -ZZZ/r;
+               }
+               return result;
+          }
+
+          //some getters
+          std::vector<int> get_Zlist(){
+               return m_Zlist;
+          }
+          std::vector<coord_3d> get_Rlist(){
+               return m_Rlist;
+          }
+          int get_num_atoms(){
+               return m_Rlist.size();
+          }
+};
 
 //Functor to make the (Gaussian) nuclear potential
 class GaussianNucleusFunctor : public FunctionFunctorInterface<double,3> {
@@ -682,7 +819,7 @@ void DF::exchange(World& world, real_convolution_3d& op, std::vector<Fcwf>& Kpsi
 
      //Report time
      Tensor<double> times = end_timer(world);
-     if(world.rank()==0) print("     ", times[0]);
+     //if(world.rank()==0) print("     ", times[0]);
 }
 
 Fcwf DF::apply_K(World& world, real_convolution_3d& op, Fcwf& phi){
@@ -1588,6 +1725,12 @@ void DF::saveDF(World& world){
      if(world.rank()==0) print("     ", times[0]);
 }
 
+void DF::make_coulomb_potential(World& world, real_function_3d& potential){
+     if(world.rank()==0) print("\n***Making a Coulomb Potential**");
+     CoulombNucleusFunctor Vfunctor(Init_params.molecule);
+     potential = real_factory_3d(world).functor(Vfunctor).truncate_mode(0).truncate_on_project();
+}
+
 //Creates the nuclear potential from the molecule object
 void DF::make_gaussian_potential(World& world, real_function_3d& potential){
      if(world.rank()==0) print("\n***Making a Gaussian Potential***");
@@ -1629,7 +1772,7 @@ void DF::DF_load_balance(World& world, real_function_3d& Vnuc){
      //}
      FunctionDefaults<3>::redistribute(world, lb.load_balance(2), false);
      Tensor<double> times = end_timer(world);
-     if(world.rank()==0) print("     ", times[0]);
+     //if(world.rank()==0) print("     ", times[0]);
      
 }
 
@@ -1748,8 +1891,8 @@ bool DF::iterate(World& world, real_function_3d& V, real_convolution_3d& op, rea
 
      Tensor<double> times = get_times(world);
 
-     if(world.rank()==0) print("\n\n\nIteration: ", iteration_number, " at ",times[0]);
-     if(world.rank()==0) print("--------------");
+     //if(world.rank()==0) print("\n\n\nIteration: ", iteration_number, " at ",times[0]);
+     //if(world.rank()==0) print("--------------");
      start_timer(world);
 
      std::vector<Fcwf> Residuals;
@@ -1771,16 +1914,16 @@ bool DF::iterate(World& world, real_function_3d& V, real_convolution_3d& op, rea
 
      //Actually let's see what happens if I always diagonalize. Answer: still messes up first iteration
      //Returning to this idea since it turns out I wasn't updating JandV...
-     diagonalize(world, V, op, Kpsis);
-     for(unsigned int kk = 0; kk < Init_params.num_occupied; kk++){
-          rho += squaremod(occupieds[kk]);
-     }
-     JandV = V + apply(op,rho); 
+     //diagonalize(world, V, op, Kpsis);
+     //for(unsigned int kk = 0; kk < Init_params.num_occupied; kk++){
+     //     rho += squaremod(occupieds[kk]);
+     //}
+     JandV = V;// + apply(op,rho); 
 
 
 
      //Apply BSH to each psi
-     if(world.rank()==0) print("\n***Applying BSH operator***");
+     //if(world.rank()==0) print("\n***Applying BSH operator***");
      start_timer(world);
      for(unsigned int j = 0; j < Init_params.num_occupied; j++){
 
@@ -1796,10 +1939,10 @@ bool DF::iterate(World& world, real_function_3d& V, real_convolution_3d& op, rea
           //}
 
           //construct the function to which we will apply the BSH
-          occupieds[j].truncate();
+          //occupieds[j].truncate();
           temp_function = occupieds[j]*JandV;
           temp_function.scale(-1.0);
-          temp_function += Kpsis[j];
+          //temp_function += Kpsis[j];
           temp_function.truncate();
 
           //temp_function now holds (K-V-J)psi, so apply the BSH
@@ -1837,7 +1980,7 @@ bool DF::iterate(World& world, real_function_3d& V, real_convolution_3d& op, rea
           residualnorm = (occupieds[j] - temp_function).norm2();
 
           //Print residual norm to keep track
-          if(world.rank()==0) printf("     Orbital: %3i,  Resid: %.10e\n",j+1, residualnorm);
+          //if(world.rank()==0) printf("     Orbital: %3i,  Resid: %.10e\n",j+1, residualnorm);
 
           //If the norm is big enough, we'll need to iterate again.
           if(residualnorm > tolerance) iterate_again = true;
@@ -1850,9 +1993,9 @@ bool DF::iterate(World& world, real_function_3d& V, real_convolution_3d& op, rea
                occupieds[j] = temp_function;
           }
      }
-     if(world.rank()==0) printf("                tolerance: %.10e\n",tolerance);
+     //if(world.rank()==0) printf("                tolerance: %.10e\n",tolerance);
      times = end_timer(world);
-     if(world.rank()==0) print("     ", times[0]);
+     //if(world.rank()==0) print("     ", times[0]);
 
      //Apply the kain solver, if called for
      if(iteration_number != 1 and DFparams.kain){
@@ -1883,153 +2026,162 @@ bool DF::iterate(World& world, real_function_3d& V, real_convolution_3d& op, rea
      for(unsigned int i = 0; i < Init_params.num_occupied; i++) occupieds[i].truncate();
 
      //orthogonalize
-     if(world.rank()==0) print("\n***Orthonormalizing***");
+     //if(world.rank()==0) print("\n***Orthonormalizing***");
      start_timer(world);
      //occupieds = orthogonalize(world,occupieds);
-     orthogonalize_inplace(world);
+     //orthogonalize_inplace(world);
      //truncate here and normalize again
-     for(unsigned int i = 0; i < Init_params.num_occupied; i++){
-           occupieds[i].truncate();
-           occupieds[i].normalize();
-     }
+     //for(unsigned int i = 0; i < Init_params.num_occupied; i++){
+     //      occupieds[i].truncate();
+     //      occupieds[i].normalize();
+     //}
      times = end_timer(world);
-     if(world.rank()==0) print("     ", times[0]);
+     //if(world.rank()==0) print("     ", times[0]);
 
      //calculate new exchange
-     if(world.rank()==0) print("\n***Recalculating Exchange***");
-     exchange(world, op, Kpsis);
+     //if(world.rank()==0) print("\n***Recalculating Exchange***");
+     //exchange(world, op, Kpsis);
 
      //Calculate new J+V term
-     if(world.rank()==0) print("\n***Recalculating Coulomb***");
-     start_timer(world);
-     rho = real_factory_3d(world);
-     for(unsigned int kk = 0; kk < Init_params.num_occupied; kk++){
-          rho += squaremod(occupieds[kk]);
-     }
-     JandV = V + apply(op,rho); 
-     times = end_timer(world);
-     if(world.rank()==0) print("     ", times[0]);
+     //if(world.rank()==0) print("\n***Recalculating Coulomb***");
+     //start_timer(world);
+     //rho = real_factory_3d(world);
+     //for(unsigned int kk = 0; kk < Init_params.num_occupied; kk++){
+     //     rho += squaremod(occupieds[kk]);
+     //}
+     //JandV = V + apply(op,rho); 
+     //times = end_timer(world);
+     //if(world.rank()==0) print("     ", times[0]);
 
      //Calculate and print total energy
      //Simultaneously update eps
-     if(world.rank()==0){
-          print("\n***Printing Current Energies***");
-     }
+     //if(world.rank()==0){
+     //     print("\n***Printing Current Energies***");
+     //}
      start_timer(world);
-     double kinetic_energy = 0.0;
-     double coulomb_energy = 0.0;
-     double exchange_energy = 0.0;
-     double nuclear_attraction_energy = 0.0;
-     double old_total_energy = total_energy;
+     //double kinetic_energy = 0.0;
+     //double coulomb_energy = 0.0;
+     //double exchange_energy = 0.0;
+     //double nuclear_attraction_energy = 0.0;
+     //double old_total_energy = total_energy;
      double myc = 137.0359895; //speed of light
-     Tensor<double> nuclear_attraction_tensor;
-     Tensor<double> coulomb_tensor;
-     Tensor<double> exchange_tensor;
+     //Tensor<double> nuclear_attraction_tensor;
+     //Tensor<double> coulomb_tensor;
+     //Tensor<double> exchange_tensor;
 
-     real_function_3d Jop = apply(op,rho);
+     //real_function_3d Jop = apply(op,rho);
 
-     //if(world.rank()==0) print("     Recalculating Energies");
-     for(unsigned int j = 0; j < Init_params.num_occupied; j++){
-          
-          //if(world.rank()==0) print("     Adding terms for orbital ", j);
-          energies[j] = rele(world,occupieds[j]);
-          
-          kinetic_energy += (energies[j] - myc*myc);
-          //if(world.rank()==0) print("          Kinetic done.");
-     }
-          
-     //temp_function = occupieds[j]*V;
-     //nuclear_attraction_energy_correction = real(inner(occupieds[j],temp_function));
-     //nuclear_attraction_energy += nuclear_attraction_energy_correction;
-     std::vector<complex_function_3d> occupieds1(Init_params.num_occupied);
-     std::vector<complex_function_3d> occupieds2(Init_params.num_occupied);
-     std::vector<complex_function_3d> occupieds3(Init_params.num_occupied);
-     std::vector<complex_function_3d> occupieds4(Init_params.num_occupied);
-     for(unsigned int i = 0; i < Init_params.num_occupied; i++){
-          occupieds1[i] = occupieds[i][0];
-          occupieds2[i] = occupieds[i][1];
-          occupieds3[i] = occupieds[i][2];
-          occupieds4[i] = occupieds[i][3];
-     }
-     nuclear_attraction_tensor = real(inner(world,occupieds1,mul(world,V,occupieds1)));
-     nuclear_attraction_tensor += real(inner(world,occupieds2,mul(world,V,occupieds2)));
-     nuclear_attraction_tensor += real(inner(world,occupieds3,mul(world,V,occupieds3)));
-     nuclear_attraction_tensor += real(inner(world,occupieds4,mul(world,V,occupieds4)));
-     nuclear_attraction_energy = nuclear_attraction_tensor.sum();
-     //if(world.rank()==0) print("          Nuclear Attraction done.");
+     ////if(world.rank()==0) print("     Recalculating Energies");
+     //for(unsigned int j = 0; j < Init_params.num_occupied; j++){
+     //     
+     //     //if(world.rank()==0) print("     Adding terms for orbital ", j);
+     //     energies[j] = rele(world,occupieds[j]);
+     //     
+     //     kinetic_energy += (energies[j] - myc*myc);
+     //     //if(world.rank()==0) print("          Kinetic done.");
+     //}
+     //     
+     ////temp_function = occupieds[j]*V;
+     ////nuclear_attraction_energy_correction = real(inner(occupieds[j],temp_function));
+     ////nuclear_attraction_energy += nuclear_attraction_energy_correction;
+     //std::vector<complex_function_3d> occupieds1(Init_params.num_occupied);
+     //std::vector<complex_function_3d> occupieds2(Init_params.num_occupied);
+     //std::vector<complex_function_3d> occupieds3(Init_params.num_occupied);
+     //std::vector<complex_function_3d> occupieds4(Init_params.num_occupied);
+     //for(unsigned int i = 0; i < Init_params.num_occupied; i++){
+     //     occupieds1[i] = occupieds[i][0];
+     //     occupieds2[i] = occupieds[i][1];
+     //     occupieds3[i] = occupieds[i][2];
+     //     occupieds4[i] = occupieds[i][3];
+     //}
+     //nuclear_attraction_tensor = real(inner(world,occupieds1,mul(world,V,occupieds1)));
+     //nuclear_attraction_tensor += real(inner(world,occupieds2,mul(world,V,occupieds2)));
+     //nuclear_attraction_tensor += real(inner(world,occupieds3,mul(world,V,occupieds3)));
+     //nuclear_attraction_tensor += real(inner(world,occupieds4,mul(world,V,occupieds4)));
+     //nuclear_attraction_energy = nuclear_attraction_tensor.sum();
+     ////if(world.rank()==0) print("          Nuclear Attraction done.");
+     //
+     ////temp_function = occupieds[j]*Jop;
+     ////coulomb_energy_correction = real(inner(occupieds[j],temp_function));
+     ////energies[j] += coulomb_energy_correction + nuclear_attraction_energy_correction;
+     ////coulomb_energy += 0.5*coulomb_energy_correction;
+     //coulomb_tensor = real(inner(world,occupieds1,mul(world,Jop,occupieds1)));
+     //coulomb_tensor += real(inner(world,occupieds2,mul(world,Jop,occupieds2)));
+     //coulomb_tensor += real(inner(world,occupieds3,mul(world,Jop,occupieds3)));
+     //coulomb_tensor += real(inner(world,occupieds4,mul(world,Jop,occupieds4)));
+     //coulomb_energy = 0.5*coulomb_tensor.sum();
+     ////if(world.rank()==0) print("          Coulomb Repulsion done.");
+     //
+     ////exchange_energy_correction = real(inner(occupieds[j],Kpsis[j]));
+     ////energies[j] -= exchange_energy_correction;
+     ////exchange_energy += 0.5*exchange_energy_correction;
+     //std::vector<complex_function_3d> Kpsis1(Init_params.num_occupied);
+     //std::vector<complex_function_3d> Kpsis2(Init_params.num_occupied);
+     //std::vector<complex_function_3d> Kpsis3(Init_params.num_occupied);
+     //std::vector<complex_function_3d> Kpsis4(Init_params.num_occupied);
+     //for(unsigned int i = 0; i < Init_params.num_occupied; i++){
+     //     Kpsis1[i] = Kpsis[i][0];
+     //     Kpsis2[i] = Kpsis[i][1];
+     //     Kpsis3[i] = Kpsis[i][2];
+     //     Kpsis4[i] = Kpsis[i][3];
+     //}
+     //exchange_tensor = real(inner(world,occupieds1,Kpsis1));
+     //exchange_tensor += real(inner(world,occupieds2,Kpsis2));
+     //exchange_tensor += real(inner(world,occupieds3,Kpsis3));
+     //exchange_tensor += real(inner(world,occupieds4,Kpsis4));
+     //exchange_energy = 0.5*exchange_tensor.sum();
+     ////if(world.rank()==0) print("          Exchange done.");
+
+     //for(unsigned int i = 0; i < Init_params.num_occupied; i++){
+     //     energies[i] += nuclear_attraction_tensor[i]+coulomb_tensor[i] - exchange_tensor[i];
+     //}
+     //total_energy = kinetic_energy + coulomb_energy - exchange_energy + nuclear_attraction_energy + nuclear_repulsion_energy;
+
+     //times = end_timer(world);
+     //if(world.rank()==0) print("     ", times[0]);
+
+     ////Need r function to print r expectation values
+     //real_function_3d rfunc = real_factory_3d(world).f(myr);
+
+     //for(unsigned int j = 0; j < Init_params.num_occupied; j++){
+     //     double r_expec = std::real(inner(occupieds[j], occupieds[j]*rfunc));
+     //     if(world.rank()==0){
+     //          printf("                Orbital: %3i, Energy: %.10e, <r>: %8e\n",j+1, energies[j]-myc*myc, r_expec);
+     //     }
+     //}
+     //if(world.rank()==0){
+     //     print("\n              Kinetic Energy: ",kinetic_energy);
+     //     print("             Coulomb  Energy: ",coulomb_energy);
+     //     print("             Exchange Energy: ",exchange_energy);
+     //     print("   Nuclear Attraction Energy: ",nuclear_attraction_energy);
+     //     print("    Nuclear Repulsion Energy: ",nuclear_repulsion_energy);
+     //     print("                Total Energy: ",total_energy);
+     //     print("       Total Energy Residual: ", std::fabs(total_energy - old_total_energy));
+     //     print("Energy Convergence Threshold: " , DFparams.thresh*pow(10,floor(log10(std::fabs(total_energy)))),"\n");
+     //}
+     //
+     ////check total energy for convergence. the global variable thresh determines how many significant figures we look for
+     //if(std::fabs(total_energy-old_total_energy) > DFparams.thresh*pow(10,floor(log10(std::fabs(total_energy))))){
+     //     iterate_again = true; 
+     //}
      
-     //temp_function = occupieds[j]*Jop;
-     //coulomb_energy_correction = real(inner(occupieds[j],temp_function));
-     //energies[j] += coulomb_energy_correction + nuclear_attraction_energy_correction;
-     //coulomb_energy += 0.5*coulomb_energy_correction;
-     coulomb_tensor = real(inner(world,occupieds1,mul(world,Jop,occupieds1)));
-     coulomb_tensor += real(inner(world,occupieds2,mul(world,Jop,occupieds2)));
-     coulomb_tensor += real(inner(world,occupieds3,mul(world,Jop,occupieds3)));
-     coulomb_tensor += real(inner(world,occupieds4,mul(world,Jop,occupieds4)));
-     coulomb_energy = 0.5*coulomb_tensor.sum();
-     //if(world.rank()==0) print("          Coulomb Repulsion done.");
-     
-     //exchange_energy_correction = real(inner(occupieds[j],Kpsis[j]));
-     //energies[j] -= exchange_energy_correction;
-     //exchange_energy += 0.5*exchange_energy_correction;
-     std::vector<complex_function_3d> Kpsis1(Init_params.num_occupied);
-     std::vector<complex_function_3d> Kpsis2(Init_params.num_occupied);
-     std::vector<complex_function_3d> Kpsis3(Init_params.num_occupied);
-     std::vector<complex_function_3d> Kpsis4(Init_params.num_occupied);
-     for(unsigned int i = 0; i < Init_params.num_occupied; i++){
-          Kpsis1[i] = Kpsis[i][0];
-          Kpsis2[i] = Kpsis[i][1];
-          Kpsis3[i] = Kpsis[i][2];
-          Kpsis4[i] = Kpsis[i][3];
-     }
-     exchange_tensor = real(inner(world,occupieds1,Kpsis1));
-     exchange_tensor += real(inner(world,occupieds2,Kpsis2));
-     exchange_tensor += real(inner(world,occupieds3,Kpsis3));
-     exchange_tensor += real(inner(world,occupieds4,Kpsis4));
-     exchange_energy = 0.5*exchange_tensor.sum();
-     //if(world.rank()==0) print("          Exchange done.");
+     double hnorm = occupieds[0].norm2();
+     double uppernorm = cumulativenorm*std::sqrt(std::real(inner(occupieds[0][0],occupieds[0][0])+inner(occupieds[0][1],occupieds[0][1])));
+     double lowernorm = cumulativenorm*std::sqrt(std::real(inner(occupieds[0][2],occupieds[0][2])+inner(occupieds[0][3],occupieds[0][3])));
 
-     for(unsigned int i = 0; i < Init_params.num_occupied; i++){
-          energies[i] += nuclear_attraction_tensor[i]+coulomb_tensor[i] - exchange_tensor[i];
-     }
-     total_energy = kinetic_energy + coulomb_energy - exchange_energy + nuclear_attraction_energy + nuclear_repulsion_energy;
+     cumulativenorm *= hnorm;
+     occupieds[0].normalize();
+
+     Fcwf temporbital = apply_T(world, occupieds[0]) + occupieds[0]*V;
+     double energyestimate = std::real(inner(occupieds[0], temporbital));
+
+     if(world.rank()==0) print("Energy:", energyestimate-myc*myc,"   Total norm:", cumulativenorm, "   LC norm:", uppernorm, "   SC norm:", lowernorm);
 
      times = end_timer(world);
-     if(world.rank()==0) print("     ", times[0]);
-
-     //Need r function to print r expectation values
-     real_function_3d rfunc = real_factory_3d(world).f(myr);
-
-     for(unsigned int j = 0; j < Init_params.num_occupied; j++){
-          double r_expec = std::real(inner(occupieds[j], occupieds[j]*rfunc));
-          if(world.rank()==0){
-               printf("                Orbital: %3i, Energy: %.10e, <r>: %8e\n",j+1, energies[j]-myc*myc, r_expec);
-          }
-     }
-     if(world.rank()==0){
-          print("\n              Kinetic Energy: ",kinetic_energy);
-          print("             Coulomb  Energy: ",coulomb_energy);
-          print("             Exchange Energy: ",exchange_energy);
-          print("   Nuclear Attraction Energy: ",nuclear_attraction_energy);
-          print("    Nuclear Repulsion Energy: ",nuclear_repulsion_energy);
-          print("                Total Energy: ",total_energy);
-          print("       Total Energy Residual: ", std::fabs(total_energy - old_total_energy));
-          print("Energy Convergence Threshold: " , DFparams.thresh*pow(10,floor(log10(std::fabs(total_energy)))),"\n");
-     }
-     
-     //check total energy for convergence. the global variable thresh determines how many significant figures we look for
-     if(std::fabs(total_energy-old_total_energy) > DFparams.thresh*pow(10,floor(log10(std::fabs(total_energy))))){
-          iterate_again = true; 
-     }
-
-     //truncate
-     for(unsigned int j = 0; j < Init_params.num_occupied; j++){
-          occupieds[j].truncate();
-     }
-
-     times = end_timer(world);
-     if(world.rank()==0) print("     Iteration time:", times[0]);
+     //if(world.rank()==0) print("     Iteration time:", times[0]);
  
+     iterate_again = true;
+
      return iterate_again;
 }
 
@@ -2051,40 +2203,41 @@ void DF::solve_occupied(World & world)
      kainsolver.set_maxsub(DFparams.maxsub);
 
      //normalize initial guesses
-     for(unsigned int i = 0; i < Init_params.num_occupied; i++){
-          occupieds[i].normalize();
-     }
+     //for(unsigned int i = 0; i < Init_params.num_occupied; i++){
+     //     occupieds[i].normalize();
+     //}
 
      //Form nuclear potential
      real_function_3d Vnuc;
      double nuclear_repulsion_energy;
-     if(DFparams.nucleus == 1){
-          make_fermi_potential(world, op, Vnuc, nuclear_repulsion_energy);
-     }
-     else{
-          make_gaussian_potential(world, Vnuc, nuclear_repulsion_energy);
-     }
+     //if(DFparams.nucleus == 1){
+     //     make_fermi_potential(world, op, Vnuc, nuclear_repulsion_energy);
+     //}
+     //else{
+     //     make_gaussian_potential(world, Vnuc, nuclear_repulsion_energy);
+     //}
+     make_coulomb_potential(world, Vnuc);
 
      //Initial load balance
-     DF_load_balance(world, Vnuc);
+     //DF_load_balance(world, Vnuc);
 
      //Initialize vector of Fcwfs to hold exchange applied to Psis
      std::vector<Fcwf> Kpsis = allocator();
 
      //Calculate initial exchange
-     if(world.rank()==0) print("\n***Calculating Initial Exchange***");
-     exchange(world, op, Kpsis);
+     //if(world.rank()==0) print("\n***Calculating Initial Exchange***");
+     //exchange(world, op, Kpsis);
 
      //Calculate initial J+V term
-     if(world.rank()==0) print("\n***Calculating Initial Coulomb***");
-     start_timer(world);
-     real_function_3d rho = real_factory_3d(world);
-     for(unsigned int kk = 0; kk < Init_params.num_occupied; kk++){
-          rho += squaremod(occupieds[kk]);
-     }
-     real_function_3d JandV = Vnuc + apply(op,rho); 
-     Tensor<double> times = end_timer(world);
-     if(world.rank()==0) print("     ", times[0]);
+     //if(world.rank()==0) print("\n***Calculating Initial Coulomb***");
+     //start_timer(world);
+     //real_function_3d rho = real_factory_3d(world);
+     //for(unsigned int kk = 0; kk < Init_params.num_occupied; kk++){
+     //     rho += squaremod(occupieds[kk]);
+     //}
+     real_function_3d JandV = Vnuc;// + apply(op,rho); 
+     //Tensor<double> times = end_timer(world);
+     //if(world.rank()==0) print("     ", times[0]);
 
      //Set tolerance for residuals
      double tol = pow(10,floor(0.5*log10(DFparams.thresh)));
@@ -2098,7 +2251,7 @@ void DF::solve_occupied(World & world)
           keep_going = iterate(world, Vnuc, op, JandV, Kpsis, kainsolver, tol, iteration_number, nuclear_repulsion_energy);
           
           //Load balance and save between iterations
-          if(keep_going and iteration_number <= DFparams.lb_iter) DF_load_balance(world, Vnuc);
+          //if(keep_going and iteration_number <= DFparams.lb_iter) DF_load_balance(world, Vnuc);
           if(DFparams.do_save) saveDF(world);
 
           //Increment iteration counter
@@ -2122,7 +2275,49 @@ void DF::solve(World& world){
     
      if(not DFparams.no_compute){
           if(DFparams.job == 0){
+               std::complex<double> myi(0,1);
+               double myc = 137.0359895;
+               complex_derivative_3d Dx(world,0);
+               complex_derivative_3d Dy(world,1);
+               complex_derivative_3d Dz(world,2);
+               
+               //Mess up everything the initialization did so we customize our initial guess
+               energies[0] = -ZZZ*ZZZ/2.0+myc*myc;
+
+               if(world.rank()==0) print("Nonrelativistic Solution as Starting Guess");
+               //Nonrelativistic Hydrogenic Atom Guess
+               real_function_3d guess = real_factory_3d(world).f(nonrelguess);
+               occupieds[0][0] = function_real2complex(guess); 
+               occupieds[0][1] = complex_factory_3d(world);
+               occupieds[0][2] = (-myi/myc) * Dz(occupieds[0][0]);
+               occupieds[0][2].scale(0.5);
+               occupieds[0][3] = (-myi/myc) * (Dx(occupieds[0][0]) + myi * Dy(occupieds[0][0]));
+               occupieds[0][3].scale(0.5);
+               occupieds[0].normalize();
                solve_occupied(world);
+
+               if(world.rank()==0) print("Random Function as Starting Guess");
+               //Random initial guess
+               occupieds[0][0] = random_function(world);
+               occupieds[0][1] = random_function(world);
+               occupieds[0][2] = random_function(world);
+               occupieds[0][3] = random_function(world);
+               occupieds[0].normalize();
+               solve_occupied(world);
+
+               if(world.rank()==0) print("Spiky Gaussian as Starting Guess");
+               //Spiky Gaussian
+               SpikyGaussianFunctor GaussianGuess(1e8);
+               guess = real_factory_3d(world).functor(GaussianGuess);
+               occupieds[0][0] = function_real2complex(guess); 
+               occupieds[0][1] = complex_factory_3d(world);
+               occupieds[0][2] = (-myi/myc) * Dz(occupieds[0][0]);
+               occupieds[0][2].scale(0.5);
+               occupieds[0][3] = (-myi/myc) * (Dx(occupieds[0][0]) + myi * Dy(occupieds[0][0]));
+               occupieds[0][3].scale(0.5);
+               occupieds[0].normalize();
+               solve_occupied(world);
+
           }
           else if(DFparams.job == 1){
                solve_virtuals1(world);
