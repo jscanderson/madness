@@ -2284,7 +2284,7 @@ void DF::solve(World& world){
                //Mess up everything the initialization did so we customize our initial guess
                energies[0] = -ZZZ*ZZZ/2.0+myc*myc;
 
-               if(world.rank()==0) print("Nonrelativistic Solution as Starting Guess");
+               if(world.rank()==0) print("\n\nNonrelativistic Solution as Starting Guess");
                //Nonrelativistic Hydrogenic Atom Guess
                real_function_3d guess = real_factory_3d(world).f(nonrelguess);
                occupieds[0][0] = function_real2complex(guess); 
@@ -2294,18 +2294,32 @@ void DF::solve(World& world){
                occupieds[0][3] = (-myi/myc) * (Dx(occupieds[0][0]) + myi * Dy(occupieds[0][0]));
                occupieds[0][3].scale(0.5);
                occupieds[0].normalize();
+               cumulativenorm = 1.0;
                solve_occupied(world);
 
-               if(world.rank()==0) print("Random Function as Starting Guess");
+               if(world.rank()==0) print("\n\n\"Swapped\" Nonrelativistic Solution as Starting Guess");
+               //Nonrelativistic Hydrogenic Atom Guess
+               occupieds[0][2] = function_real2complex(guess); 
+               occupieds[0][3] = complex_factory_3d(world);
+               occupieds[0][0] = (-myi/myc) * Dz(occupieds[0][0]);
+               occupieds[0][0].scale(0.5);
+               occupieds[0][1] = (-myi/myc) * (Dx(occupieds[0][0]) + myi * Dy(occupieds[0][0]));
+               occupieds[0][1].scale(0.5);
+               occupieds[0].normalize();
+               cumulativenorm = 1.0;
+               solve_occupied(world);
+
+               if(world.rank()==0) print("\n\nRandom Function as Starting Guess");
                //Random initial guess
                occupieds[0][0] = random_function(world);
                occupieds[0][1] = random_function(world);
                occupieds[0][2] = random_function(world);
                occupieds[0][3] = random_function(world);
                occupieds[0].normalize();
+               cumulativenorm = 1.0;
                solve_occupied(world);
 
-               if(world.rank()==0) print("Spiky Gaussian as Starting Guess");
+               if(world.rank()==0) print("\n\nSpiky Gaussian as Starting Guess");
                //Spiky Gaussian
                SpikyGaussianFunctor GaussianGuess(1e8);
                guess = real_factory_3d(world).functor(GaussianGuess);
@@ -2316,6 +2330,7 @@ void DF::solve(World& world){
                occupieds[0][3] = (-myi/myc) * (Dx(occupieds[0][0]) + myi * Dy(occupieds[0][0]));
                occupieds[0][3].scale(0.5);
                occupieds[0].normalize();
+               cumulativenorm = 1.0;
                solve_occupied(world);
 
           }
