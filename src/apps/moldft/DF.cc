@@ -2295,6 +2295,16 @@ void DF::solve(World& world){
                occupieds[0][3].scale(0.5);
                occupieds[0].normalize();
                cumulativenorm = 1.0;
+               
+               double hnorm = occupieds[0].norm2();
+               double uppernorm = std::sqrt(std::real(inner(occupieds[0][0],occupieds[0][0])+inner(occupieds[0][1],occupieds[0][1])));
+               double lowernorm = std::sqrt(std::real(inner(occupieds[0][2],occupieds[0][2])+inner(occupieds[0][3],occupieds[0][3])));
+               real_function_3d V;
+               make_coulomb_potential(world, V);
+               Fcwf temporbital = apply_T(world, occupieds[0]) + occupieds[0]*V;
+               double energyestimate = std::real(inner(occupieds[0], temporbital));
+               if(world.rank()==0) print("Energy:", energyestimate-myc*myc,"   Total norm:", hnorm, "   LC norm:", uppernorm, "   SC norm:", lowernorm);
+
                solve_occupied(world);
 
                if(world.rank()==0) print("\n\n\"Swapped\" Nonrelativistic Solution as Starting Guess");
@@ -2307,6 +2317,14 @@ void DF::solve(World& world){
                occupieds[0][1].scale(0.5);
                occupieds[0].normalize();
                cumulativenorm = 1.0;
+               
+               hnorm = occupieds[0].norm2();
+               uppernorm = std::sqrt(std::real(inner(occupieds[0][0],occupieds[0][0])+inner(occupieds[0][1],occupieds[0][1])));
+               lowernorm = std::sqrt(std::real(inner(occupieds[0][2],occupieds[0][2])+inner(occupieds[0][3],occupieds[0][3])));
+               temporbital = apply_T(world, occupieds[0]) + occupieds[0]*V;
+               energyestimate = std::real(inner(occupieds[0], temporbital));
+               if(world.rank()==0) print("Energy:", energyestimate-myc*myc,"   Total norm:", hnorm, "   LC norm:", uppernorm, "   SC norm:", lowernorm);
+
                solve_occupied(world);
 
                if(world.rank()==0) print("\n\nRandom Function as Starting Guess");
@@ -2317,6 +2335,12 @@ void DF::solve(World& world){
                occupieds[0][3] = random_function(world);
                occupieds[0].normalize();
                cumulativenorm = 1.0;
+               hnorm = occupieds[0].norm2();
+               uppernorm = std::sqrt(std::real(inner(occupieds[0][0],occupieds[0][0])+inner(occupieds[0][1],occupieds[0][1])));
+               lowernorm = std::sqrt(std::real(inner(occupieds[0][2],occupieds[0][2])+inner(occupieds[0][3],occupieds[0][3])));
+               temporbital = apply_T(world, occupieds[0]) + occupieds[0]*V;
+               energyestimate = std::real(inner(occupieds[0], temporbital));
+               if(world.rank()==0) print("Energy:", energyestimate-myc*myc,"   Total norm:", hnorm, "   LC norm:", uppernorm, "   SC norm:", lowernorm);
                solve_occupied(world);
 
                if(world.rank()==0) print("\n\nSpiky Gaussian as Starting Guess");
@@ -2331,6 +2355,12 @@ void DF::solve(World& world){
                occupieds[0][3].scale(0.5);
                occupieds[0].normalize();
                cumulativenorm = 1.0;
+               hnorm = occupieds[0].norm2();
+               uppernorm = std::sqrt(std::real(inner(occupieds[0][0],occupieds[0][0])+inner(occupieds[0][1],occupieds[0][1])));
+               lowernorm = std::sqrt(std::real(inner(occupieds[0][2],occupieds[0][2])+inner(occupieds[0][3],occupieds[0][3])));
+               temporbital = apply_T(world, occupieds[0]) + occupieds[0]*V;
+               energyestimate = std::real(inner(occupieds[0], temporbital));
+               if(world.rank()==0) print("Energy:", energyestimate-myc*myc,"   Total norm:", hnorm, "   LC norm:", uppernorm, "   SC norm:", lowernorm);
                solve_occupied(world);
 
           }
