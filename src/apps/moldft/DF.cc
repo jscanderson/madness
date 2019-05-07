@@ -1726,7 +1726,7 @@ void DF::saveDF(World& world){
 }
 
 void DF::make_coulomb_potential(World& world, real_function_3d& potential){
-     if(world.rank()==0) print("\n***Making a Coulomb Potential**");
+     //if(world.rank()==0) print("\n***Making a Coulomb Potential**");
      CoulombNucleusFunctor Vfunctor(Init_params.molecule);
      potential = real_factory_3d(world).functor(Vfunctor).truncate_mode(0).truncate_on_project();
 }
@@ -1887,7 +1887,7 @@ void DF::make_density_lineplots(World& world, const char* filename, int npt, dou
 }
 
 //One iteration
-bool DF::iterate(World& world, real_function_3d& V, real_convolution_3d& op, real_function_3d& JandV, std::vector<Fcwf>& Kpsis, XNonlinearSolver<std::vector<Fcwf>, std::complex<double>, Fcwf_vector_allocator>& kainsolver, double& tolerance, int& iteration_number, double& nuclear_repulsion_energy){
+bool DF::iterate(World& world, real_function_3d& V, real_convolution_3d& op, real_function_3d& JandV, std::vector<Fcwf>& Kpsis, XNonlinearSolver<std::vector<Fcwf>, std::complex<double>, Fcwf_vector_allocator>& kainsolver, double& tolerance, int& iteration_number, double& nuclear_repulsion_energy, Fcwf& f_for_proj){
 
      Tensor<double> times = get_times(world);
 
@@ -2166,8 +2166,8 @@ bool DF::iterate(World& world, real_function_3d& V, real_convolution_3d& op, rea
      //}
      
      double hnorm = occupieds[0].norm2();
-     double uppernorm = cumulativenorm*std::sqrt(std::real(inner(occupieds[0][0],occupieds[0][0])+inner(occupieds[0][1],occupieds[0][1])));
-     double lowernorm = cumulativenorm*std::sqrt(std::real(inner(occupieds[0][2],occupieds[0][2])+inner(occupieds[0][3],occupieds[0][3])));
+     double uppernorm = std::sqrt(std::real(inner(occupieds[0][0],occupieds[0][0])+inner(occupieds[0][1],occupieds[0][1])));
+     double lowernorm = std::sqrt(std::real(inner(occupieds[0][2],occupieds[0][2])+inner(occupieds[0][3],occupieds[0][3])));
 
      cumulativenorm *= hnorm;
      occupieds[0].normalize();
@@ -2175,7 +2175,12 @@ bool DF::iterate(World& world, real_function_3d& V, real_convolution_3d& op, rea
      Fcwf temporbital = apply_T(world, occupieds[0]) + occupieds[0]*V;
      double energyestimate = std::real(inner(occupieds[0], temporbital));
 
-     if(world.rank()==0) print("Energy:", energyestimate-myc*myc,"   Total norm:", cumulativenorm, "   LC norm:", uppernorm, "   SC norm:", lowernorm);
+
+     //calculate projection onto f_for_proj
+     double projection = std::real(inner(f_for_proj, occupieds[0]));
+
+     //if(world.rank()==0) print("Energy:", energyestimate-myc*myc,"   Total norm:", cumulativenorm, "   LC norm:", uppernorm, "   SC norm:", lowernorm);
+     if(world.rank()==0) printf("%15.8e %15.8e %15.8e %15.8e %15.8e\n", energyestimate-myc*myc, cumulativenorm, uppernorm, lowernorm, projection);
 
      times = end_timer(world);
      //if(world.rank()==0) print("     Iteration time:", times[0]);
@@ -2186,11 +2191,11 @@ bool DF::iterate(World& world, real_function_3d& V, real_convolution_3d& op, rea
 }
 
 // Solves the for occupied orbitals
-void DF::solve_occupied(World & world)
+void DF::solve_occupied(World & world, Fcwf& f_for_proj)
 {
 
      //State what we're doing here
-     if(world.rank()==0) print("\nSolving for ", Init_params.num_occupied, " occupied orbitals\n-----------------------------------\n");
+     //if(world.rank()==0) print("\nSolving for ", Init_params.num_occupied, " occupied orbitals\n-----------------------------------\n");
 
      //Will need a coulomb operator
      real_convolution_3d op = CoulombOperator(world,DFparams.small,DFparams.thresh);
@@ -2248,7 +2253,7 @@ void DF::solve_occupied(World & world)
      int iteration_number = 1;
      //while(iteration_number < DFparams.max_iter){
      while(keep_going and iteration_number < DFparams.max_iter){
-          keep_going = iterate(world, Vnuc, op, JandV, Kpsis, kainsolver, tol, iteration_number, nuclear_repulsion_energy);
+          keep_going = iterate(world, Vnuc, op, JandV, Kpsis, kainsolver, tol, iteration_number, nuclear_repulsion_energy, f_for_proj);
           
           //Load balance and save between iterations
           //if(keep_going and iteration_number <= DFparams.lb_iter) DF_load_balance(world, Vnuc);
@@ -2284,7 +2289,11 @@ void DF::solve(World& world){
                //Mess up everything the initialization did so we customize our initial guess
                energies[0] = -ZZZ*ZZZ/2.0+myc*myc;
 
-               if(world.rank()==0) print("\n\nNonrelativistic Solution as Starting Guess");
+               if(world.rank()==0){
+                    print("\n\nNonrelativistic Solution as Starting Guess");
+                    print("         Energy      Total norm         LC norm         SC norm            proj");
+                    print("-------------------------------------------------------------------------------");
+               }
                //Nonrelativistic Hydrogenic Atom Guess
                real_function_3d guess = real_factory_3d(world).f(nonrelguess);
                occupieds[0][0] = function_real2complex(guess); 
@@ -2303,11 +2312,24 @@ void DF::solve(World& world){
                make_coulomb_potential(world, V);
                Fcwf temporbital = apply_T(world, occupieds[0]) + occupieds[0]*V;
                double energyestimate = std::real(inner(occupieds[0], temporbital));
-               if(world.rank()==0) print("Energy:", energyestimate-myc*myc,"   Total norm:", hnorm, "   LC norm:", uppernorm, "   SC norm:", lowernorm);
+               Fcwf f_for_proj(world); //Want to project future "solutions" onto the actual solution
+               double projection = std::real(inner(f_for_proj, occupieds[0]));
 
-               solve_occupied(world);
+               if(world.rank()==0) printf("%15.8e %15.8e %15.8e %15.8e %15.8e\n", energyestimate-myc*myc, hnorm, uppernorm, lowernorm, projection);
 
-               if(world.rank()==0) print("\n\n\"Swapped\" Nonrelativistic Solution as Starting Guess");
+               solve_occupied(world, f_for_proj);
+
+               //set f_for_proj to this solution
+               f_for_proj[0] = copy(occupieds[0][0]);
+               f_for_proj[1] = copy(occupieds[0][1]);
+               f_for_proj[2] = copy(occupieds[0][2]);
+               f_for_proj[3] = copy(occupieds[0][3]);
+
+               if(world.rank()==0) {
+                    print("\n\n\"Swapped\" Nonrelativistic Solution as Starting Guess");
+                    print("         Energy      Total norm         LC norm         SC norm            proj");
+                    print("-------------------------------------------------------------------------------");
+               }
                //Nonrelativistic Hydrogenic Atom Guess
                occupieds[0][2] = function_real2complex(guess); 
                occupieds[0][3] = complex_factory_3d(world);
@@ -2323,11 +2345,15 @@ void DF::solve(World& world){
                lowernorm = std::sqrt(std::real(inner(occupieds[0][2],occupieds[0][2])+inner(occupieds[0][3],occupieds[0][3])));
                temporbital = apply_T(world, occupieds[0]) + occupieds[0]*V;
                energyestimate = std::real(inner(occupieds[0], temporbital));
-               if(world.rank()==0) print("Energy:", energyestimate-myc*myc,"   Total norm:", hnorm, "   LC norm:", uppernorm, "   SC norm:", lowernorm);
+               if(world.rank()==0) printf("%15.8e %15.8e %15.8e %15.8e %15.8e\n", energyestimate-myc*myc, hnorm, uppernorm, lowernorm, projection);
 
-               solve_occupied(world);
+               solve_occupied(world, f_for_proj);
 
-               if(world.rank()==0) print("\n\nRandom Function as Starting Guess");
+               if(world.rank()==0) {
+                    print("\n\nRandom Function as Starting Guess");
+                    print("         Energy      Total norm         LC norm         SC norm            proj");
+                    print("-------------------------------------------------------------------------------");
+               }
                //Random initial guess
                occupieds[0][0] = random_function(world);
                occupieds[0][1] = random_function(world);
@@ -2340,10 +2366,14 @@ void DF::solve(World& world){
                lowernorm = std::sqrt(std::real(inner(occupieds[0][2],occupieds[0][2])+inner(occupieds[0][3],occupieds[0][3])));
                temporbital = apply_T(world, occupieds[0]) + occupieds[0]*V;
                energyestimate = std::real(inner(occupieds[0], temporbital));
-               if(world.rank()==0) print("Energy:", energyestimate-myc*myc,"   Total norm:", hnorm, "   LC norm:", uppernorm, "   SC norm:", lowernorm);
-               solve_occupied(world);
+               if(world.rank()==0) printf("%15.8e %15.8e %15.8e %15.8e %15.8e\n", energyestimate-myc*myc, hnorm, uppernorm, lowernorm, projection);
+               solve_occupied(world, f_for_proj);
 
-               if(world.rank()==0) print("\n\nSpiky Gaussian as Starting Guess");
+               if(world.rank()==0) {
+                    print("\n\nSpiky Gaussian as Starting Guess");
+                    print("         Energy      Total norm         LC norm         SC norm            proj");
+                    print("-------------------------------------------------------------------------------");
+               }
                //Spiky Gaussian
                SpikyGaussianFunctor GaussianGuess(1e8);
                guess = real_factory_3d(world).functor(GaussianGuess);
@@ -2360,8 +2390,8 @@ void DF::solve(World& world){
                lowernorm = std::sqrt(std::real(inner(occupieds[0][2],occupieds[0][2])+inner(occupieds[0][3],occupieds[0][3])));
                temporbital = apply_T(world, occupieds[0]) + occupieds[0]*V;
                energyestimate = std::real(inner(occupieds[0], temporbital));
-               if(world.rank()==0) print("Energy:", energyestimate-myc*myc,"   Total norm:", hnorm, "   LC norm:", uppernorm, "   SC norm:", lowernorm);
-               solve_occupied(world);
+               if(world.rank()==0) printf("%15.8e %15.8e %15.8e %15.8e %15.8e\n", energyestimate-myc*myc, hnorm, uppernorm, lowernorm, projection);
+               solve_occupied(world, f_for_proj);
 
           }
           else if(DFparams.job == 1){
@@ -2415,7 +2445,7 @@ void DF::solve_virtuals1(World& world){
      v_energies = temp_v_energies;
      
      //First, perform Dirac Fock on the n-1 occupied orbitals
-     solve_occupied(world);
+     //solve_occupied(world);
 
      //Next, calculate the last occupied orbital simultaneously with the virtuals
      if(world.rank()==0) print("***Calculating Final Occupied and Virtual Orbitals***");

@@ -117,14 +117,14 @@ class DF {
           void DF_load_balance(World& world, real_function_3d& Vnuc);
 
           //Does one full SCF iteration
-          bool iterate(World& world, real_function_3d& V, real_convolution_3d& op, real_function_3d& JandV, std::vector<Fcwf>& Kpsis, XNonlinearSolver<std::vector<Fcwf>, std::complex<double>, Fcwf_vector_allocator>& kainsolver, double& tolerance, int& iteration_number, double& nuclear_repulsion_energy);
+          bool iterate(World& world, real_function_3d& V, real_convolution_3d& op, real_function_3d& JandV, std::vector<Fcwf>& Kpsis, XNonlinearSolver<std::vector<Fcwf>, std::complex<double>, Fcwf_vector_allocator>& kainsolver, double& tolerance, int& iteration_number, double& nuclear_repulsion_energy, Fcwf& f_for_proj);
                 
 
           //Runs the job specified in the input parameters
           void solve(World& world);
 
           //solves the Dirac Fock equation for the occupied orbitals   
-          void solve_occupied(World & world);
+          void solve_occupied(World & world, Fcwf& f_for_proj);
 
           //solves for n-1 occupieds, then the last occupied, then some number of virtuals
           void solve_virtuals1(World& world);
