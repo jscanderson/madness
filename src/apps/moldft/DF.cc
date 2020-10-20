@@ -2345,6 +2345,7 @@ void DF::solve(World& world){
                lowernorm = std::sqrt(std::real(inner(occupieds[0][2],occupieds[0][2])+inner(occupieds[0][3],occupieds[0][3])));
                temporbital = apply_T(world, occupieds[0]) + occupieds[0]*V;
                energyestimate = std::real(inner(occupieds[0], temporbital));
+               projection = std::real(inner(f_for_proj, occupieds[0]));
                if(world.rank()==0) printf("%15.8e %15.8e %15.8e %15.8e %15.8e\n", energyestimate-myc*myc, hnorm, uppernorm, lowernorm, projection);
 
                solve_occupied(world, f_for_proj);
@@ -2366,6 +2367,7 @@ void DF::solve(World& world){
                lowernorm = std::sqrt(std::real(inner(occupieds[0][2],occupieds[0][2])+inner(occupieds[0][3],occupieds[0][3])));
                temporbital = apply_T(world, occupieds[0]) + occupieds[0]*V;
                energyestimate = std::real(inner(occupieds[0], temporbital));
+               projection = std::real(inner(f_for_proj, occupieds[0]));
                if(world.rank()==0) printf("%15.8e %15.8e %15.8e %15.8e %15.8e\n", energyestimate-myc*myc, hnorm, uppernorm, lowernorm, projection);
                solve_occupied(world, f_for_proj);
 
@@ -2390,6 +2392,7 @@ void DF::solve(World& world){
                lowernorm = std::sqrt(std::real(inner(occupieds[0][2],occupieds[0][2])+inner(occupieds[0][3],occupieds[0][3])));
                temporbital = apply_T(world, occupieds[0]) + occupieds[0]*V;
                energyestimate = std::real(inner(occupieds[0], temporbital));
+               projection = std::real(inner(f_for_proj, occupieds[0]));
                if(world.rank()==0) printf("%15.8e %15.8e %15.8e %15.8e %15.8e\n", energyestimate-myc*myc, hnorm, uppernorm, lowernorm, projection);
                solve_occupied(world, f_for_proj);
 
